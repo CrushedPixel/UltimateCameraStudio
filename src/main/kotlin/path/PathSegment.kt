@@ -48,11 +48,7 @@ public class PathSegment(
     /** The path segment's approximate length. */
     public val length: Double = samplePoints.last().lengthAtPoint
 
-    public fun valueAt(pos: Double, reparameterize: Boolean): Location {
-        if (!reparameterize) {
-            return valueAtRelativePos(pos)
-        }
-
+    public fun valueAt(pos: Double): Location {
         val actualPos = getRelativePosAtLength(pos * length)
         return valueAtRelativePos(actualPos)
     }

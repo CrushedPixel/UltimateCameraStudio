@@ -21,7 +21,7 @@ public class Path(private val segments: List<PathSegment>) {
     }
 
     /** Returns the desired [amount] of (not yet)equidistant points on the path. */
-    public fun getPoints(amount: Int, reparameterize: Boolean): List<Location> {
+    public fun getPoints(amount: Int): List<Location> {
         val points = mutableListOf<Location>()
 
         for (i in 0 until amount) {
@@ -29,7 +29,7 @@ public class Path(private val segments: List<PathSegment>) {
 
             val (segmentIndex, segmentPos) = getSegmentIndexAndPos(pos)
 
-            points += segments[segmentIndex].valueAt(segmentPos, reparameterize)
+            points += segments[segmentIndex].valueAt(segmentPos)
         }
 
         return points

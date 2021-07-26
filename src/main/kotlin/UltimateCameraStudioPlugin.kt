@@ -7,41 +7,26 @@ import cloud.commandframework.annotations.CommandMethod
 import cloud.commandframework.bukkit.BukkitCommandManager
 import cloud.commandframework.execution.CommandExecutionCoordinator
 import cloud.commandframework.meta.SimpleCommandMeta
-import com.comphenix.protocol.PacketType
-import com.comphenix.protocol.ProtocolLibrary
-import com.comphenix.protocol.events.PacketContainer
-import com.comphenix.protocol.utility.MinecraftReflection
-import com.comphenix.protocol.wrappers.WrappedDataWatcher
-import java.util.UUID
-import java.util.concurrent.atomic.AtomicInteger
+import kotlin.time.DurationUnit
+import kotlin.time.ExperimentalTime
+import kotlin.time.toDuration
 import kr.entree.spigradle.annotations.PluginMain
-import net.crushedpixel.ultimatecamerastudio.interpolation.CatmullRomSplineInterpolation
-import net.crushedpixel.ultimatecamerastudio.interpolation.Interpolation
-import net.crushedpixel.ultimatecamerastudio.path.Path
-import net.crushedpixel.ultimatecamerastudio.path.PathSegment
-import net.minecraft.server.v1_16_R3.ArgumentAnchor
-import net.minecraft.server.v1_16_R3.Entity
-import net.minecraft.server.v1_16_R3.Packet
 import org.bukkit.Bukkit
 import org.bukkit.ChatColor
-import org.bukkit.GameMode
 import org.bukkit.Location
 import org.bukkit.command.CommandSender
-import org.bukkit.craftbukkit.v1_16_R3.entity.CraftPlayer
-import org.bukkit.entity.EntityType
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.HandlerList
 import org.bukkit.event.Listener
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.plugin.java.JavaPlugin
-import org.joor.Reflect
 
 @PluginMain
+@ExperimentalTime
 public class UltimateCameraStudioPlugin : JavaPlugin(), Listener {
 
-    /** For each player, the list of points they have set. */
-    private val pointsByPlayer: MutableMap<UUID, MutableList<Location>> = mutableMapOf()
+    private val cameraPathManager = CameraPathManager(this)
 
     override fun onEnable() {
         Bukkit.getPluginManager().registerEvents(this, this)
@@ -55,6 +40,8 @@ public class UltimateCameraStudioPlugin : JavaPlugin(), Listener {
             AnnotationParser(manager, CommandSender::class.java) { SimpleCommandMeta.empty() }
 
         annotationParser.parse(this)
+
+        // protocol.eventBus.listen(ClientSteerVehiclePacket::class.java, ::onPlayerDismount)
     }
 
     override fun onDisable() {
@@ -63,182 +50,115 @@ public class UltimateCameraStudioPlugin : JavaPlugin(), Listener {
 
     @EventHandler
     public fun onPlayerQuit(event: PlayerQuitEvent) {
-        pointsByPlayer -= event.player.uniqueId
+        cameraPathManager.stop(event.player)
     }
 
-    @CommandMethod("cam p [location]")
-    private fun addPointCommand(player: Player, @Argument("location") location: Location?) {
-        val points = pointsByPlayer.computeIfAbsent(player.uniqueId) { mutableListOf() }
-
-        val loc = location ?: player.location
-        points += loc
-
-        player.sendMessage("${ChatColor.GREEN}Added point at $loc")
-    }
-
-    @CommandMethod("cam start <duration> <reparameterize>")
-    private fun startCamCommand(
+    @CommandMethod("cam add [location] [yaw] [pitch]")
+    private fun addPointCommand(
         player: Player,
-        @Argument("duration") duration: Int,
-        @Argument("reparameterize") reparameterize: Boolean
+        @Argument("location") location: Location?,
+        @Argument("yaw") yaw: Float?,
+        @Argument("pitch") pitch: Float?,
     ) {
-        // TODO: allow for specification of interpolation method
-        // TODO: allow more complex duration strings (10m5s) instead of just a second value
+        val loc = location ?: player.location
+        yaw?.let { loc.yaw = it }
+        pitch?.let { loc.pitch = pitch }
 
-        val points = pointsByPlayer[player.uniqueId]
-        if (points == null || points.size < 2) {
-            player.sendMessage("${ChatColor.RED}At least 2 camera points are required")
+        if (!cameraPathManager.addPoint(player, loc)) {
+            player.sendMessage("${ChatColor.RED}All points must be in the same world!")
             return
         }
 
-        val numPoints = duration * 20
+        player.sendMessage("${ChatColor.GREEN}Added point ${loc.toPrettyString()}")
 
-        val segments = mutableListOf<PathSegment>()
-        for (i in 1..points.lastIndex) {
-            val p0 = points[(i - 2).coerceAtLeast(0)]
-            val p1 = points[i - 1]
-            val p2 = points[i]
-            val p3 = points[i.coerceAtMost(points.lastIndex)]
+        // TODO: dry this up with insertPointCommand
+    }
 
-            val xInter: Interpolation = CatmullRomSplineInterpolation(p0.x, p1.x, p2.x, p3.x)
-            val yInter: Interpolation = CatmullRomSplineInterpolation(p0.y, p1.y, p2.y, p3.y)
-            val zInter: Interpolation = CatmullRomSplineInterpolation(p0.z, p1.z, p2.z, p3.z)
-            val yawInter: Interpolation =
-                CatmullRomSplineInterpolation(
-                    p0.yaw.toDouble(), p1.yaw.toDouble(), p2.yaw.toDouble(), p3.yaw.toDouble())
-            val pitchInter: Interpolation =
-                CatmullRomSplineInterpolation(
-                    p0.pitch.toDouble(),
-                    p1.pitch.toDouble(),
-                    p2.pitch.toDouble(),
-                    p3.pitch.toDouble())
+    @CommandMethod("cam insert <index> [location] [yaw] [pitch]")
+    private fun insertPointCommand(
+        player: Player,
+        @Argument("index") index: Int,
+        @Argument("location") location: Location?,
+        @Argument("yaw") yaw: Float?,
+        @Argument("pitch") pitch: Float?,
+    ) {
+        val loc = location ?: player.location
+        yaw?.let { loc.yaw = it }
+        pitch?.let { loc.pitch = pitch }
 
-            segments += PathSegment(p0.world!!, xInter, yInter, zInter, yawInter, pitchInter)
+        if (!cameraPathManager.addPoint(player, loc, index)) {
+            player.sendMessage("${ChatColor.RED}All points must be in the same world!")
+            return
         }
 
-        // put the player in spectator mode
-        val originalGameMode = player.gameMode
-        player.gameMode = GameMode.CREATIVE
+        player.sendMessage("${ChatColor.GREEN}Added point ${loc.toPrettyString()} at index $index")
+    }
 
-        val path = Path(segments)
-        val pointsOnPath = path.getPoints(numPoints, reparameterize)
-
-        // spawn a fake area effect cloud for the player to ride on
-        val fakeEntityId =
-            Reflect.onClass(Entity::class.java).get<AtomicInteger>("entityCount").incrementAndGet()
-        val entityUUID = UUID.randomUUID()
-
-        val aecPacket = PacketContainer(PacketType.Play.Server.SPAWN_ENTITY)
-        val aecMetadataPacket = PacketContainer(PacketType.Play.Server.ENTITY_METADATA)
-
-        aecPacket.integers.write(0, fakeEntityId)
-        aecPacket.uuiDs.write(0, entityUUID)
-
-        aecPacket.entityTypeModifier.write(
-            0, EntityType.AREA_EFFECT_CLOUD) // Sets the Entity Type to AEC
-
-        aecPacket.doubles.write(0, pointsOnPath.first().x) // Writes X
-        aecPacket.doubles.write(1, pointsOnPath.first().y) // Writes Y
-        aecPacket.doubles.write(2, pointsOnPath.first().z) // Writes Z
-        aecPacket.integers.write(1, 0) // Writes Pitch
-        aecPacket.integers.write(2, 0) // Writes Yaw
-        aecPacket.integers.write(3, 0) // Writes Object Data (not needed)
-        aecPacket.integers.write(4, 0) // Writes velocity X
-        aecPacket.integers.write(5, 0) // Writes velocity Y
-        aecPacket.integers.write(6, 0) // Writes velocity Z
-
-        val watcher = WrappedDataWatcher() // Creates new Data Watcher
-        val serializer = WrappedDataWatcher.Registry.get(java.lang.Float::class.java)
-
-        watcher.entity = player
-        watcher.setObject(7, serializer, 0f) // Sets the radius (index 7) to 0
-        // https://wiki.vg/Entity_metadata#Area_Effect_Cloud
-
-        aecMetadataPacket.integers.write(0, fakeEntityId)
-        aecMetadataPacket.watchableCollectionModifier.write(
-            0, watcher.watchableObjects) // set AEC radius to 0
-
-        player.sendPacket(aecPacket)
-        player.sendPacket(aecMetadataPacket)
-
-        val mountPacket = PacketContainer(PacketType.Play.Server.MOUNT)
-        val players = IntArray(1)
-        players[0] = player.entityId
-        mountPacket.integers.write(0, fakeEntityId) // Writes EID of the corresponding AEC
-        mountPacket.integerArrays.write(
-            0, players) // Writes Array of the player, who will be mounted
-
-        player.sendPacket(mountPacket)
-
-        for ((i, point) in pointsOnPath.withIndex()) {
-            if (i == 0) continue
-
-            val prevPoint = pointsOnPath[i - 1]
-
-            // move the AEC to the new location
-            val entityMovePacket = PacketContainer(PacketType.Play.Server.REL_ENTITY_MOVE)
-            entityMovePacket.integers.write(0, fakeEntityId) // Writes the corresponding EID
-            entityMovePacket.shorts.write(
-                0, positionDelta(prevPoint.x, point.x)) // Writes the new X
-            entityMovePacket.shorts.write(
-                1, positionDelta(prevPoint.y, point.y)) // Writes the new Y
-            entityMovePacket.shorts.write(
-                2, positionDelta(prevPoint.z, point.z)) // Writes the new Z
-            entityMovePacket.booleans.write(0, false) // Writes onGround to false
-
-            player.sendPacket(entityMovePacket)
-
-            Bukkit.getScheduler()
-                .scheduleSyncDelayedTask(
-                    this,
-                    {
-                        player.sendPacket(mountPacket)
-                        player.sendPacket(entityMovePacket)
-                        player.setHeadRotation(point.yaw, point.pitch)
-                    },
-                    i.toLong())
+    @CommandMethod("cam remove [index]")
+    private fun removePointCommand(player: Player, @Argument("index") index: Int?) {
+        var actualIndex = index
+        if (actualIndex != null) {
+            // we don't want the user to have to use 0-based indices,
+            // so we subtract 1 from them
+            actualIndex--
         }
 
-        Bukkit.getScheduler()
-            .scheduleSyncDelayedTask(
-                this,
-                {
-                    // despawn the fake AEC
-                    val entityRemovePacket = PacketContainer(PacketType.Play.Server.ENTITY_DESTROY)
-                    entityRemovePacket.integerArrays.write(0, intArrayOf(fakeEntityId))
-                    player.sendPacket(entityRemovePacket)
+        if (cameraPathManager.removePoint(player, actualIndex)) return
 
-                    player.gameMode = originalGameMode
-                },
-                pointsOnPath.size.toLong())
+        // the removal was unsuccessful - send an according error message
+        if (actualIndex == null) {
+            player.sendMessage("${ChatColor.RED}No points to remove!")
+        } else {
+            player.sendMessage("${ChatColor.RED}Point $index doesn't exist!")
+        }
+    }
+
+    @CommandMethod("cam clear")
+    private fun clearPointsCommand(player: Player) {
+        cameraPathManager.clearPoints(player)
+        player.sendMessage("${ChatColor.GREEN}All points have been cleared.")
+    }
+
+    @CommandMethod("cam goto <index>")
+    private fun gotoPointCommand(player: Player, @Argument("index") index: Int) {
+        val points = cameraPathManager.getPoints(player)
+
+        // we don't want the user to have to use 0-based indices,
+        // so we subtract 1 from them
+        val actualIndex = index - 1
+
+        if (actualIndex !in points.indices) {
+            player.sendMessage("${ChatColor.RED}Point $index doesn't exist!")
+            return
+        }
+
+        player.teleport(points[actualIndex])
+    }
+
+    @CommandMethod("cam list")
+    private fun listPointsCommand(player: Player) {
+        val points = cameraPathManager.getPoints(player)
+
+        player.sendMessage("${ChatColor.YELLOW}You have ${points.size} camera points:")
+        for ((index, point) in points.withIndex()) {
+            player.sendMessage("${ChatColor.YELLOW}${index + 1} - ${point.toPrettyString()}")
+        }
+    }
+
+    @CommandMethod("cam start <duration>")
+    private fun startCamCommand(
+        player: Player,
+        @Argument("duration") duration: Int,
+    ) {
+        cameraPathManager.start(player, duration.toDuration(DurationUnit.SECONDS))
+    }
+
+    @CommandMethod("cam stop")
+    private fun stopCamCommand(player: Player) {
+        if (cameraPathManager.stop(player)) return
+        player.sendMessage("${ChatColor.RED}You're not on a camera path!")
     }
 }
 
-private fun Player.sendPacket(packet: Packet<*>) {
-    (this as CraftPlayer).handle.playerConnection.sendPacket(packet)
-}
-
-private fun Player.sendPacket(packet: PacketContainer) {
-    ProtocolLibrary.getProtocolManager().sendServerPacket(player, packet)
-}
-
-private fun angleToByte(angle: Float): Byte = (angle * 256 / 360).toInt().toByte()
-
-private fun positionDelta(prev: Double, cur: Double): Short =
-    ((cur * 32 - prev * 32) * 128).toInt().toShort()
-
-private fun Player.setHeadRotation(yaw: Float, pitch: Float) {
-    // get a location 10000 blocks from the player in the desired direction
-    val loc = eyeLocation
-    loc.yaw = yaw
-    loc.pitch = pitch
-    loc.add(loc.direction.multiply(10000))
-
-    // send a packet to the player, telling them to look at that location
-    val packet = PacketContainer(PacketType.Play.Server.LOOK_AT)
-    packet.doubles.write(0, loc.x)
-    packet.doubles.write(1, loc.y)
-    packet.doubles.write(2, loc.z)
-
-    sendPacket(packet)
-}
+public fun Location.toPrettyString(): String =
+    "(%.2f, %.2f, %.2f, %.2f, %.2f)".format(x, y, z, yaw, pitch)
