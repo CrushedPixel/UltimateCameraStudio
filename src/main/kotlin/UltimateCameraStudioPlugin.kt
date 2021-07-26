@@ -81,8 +81,12 @@ public class UltimateCameraStudioPlugin : JavaPlugin(), Listener {
         player.sendMessage("${ChatColor.GREEN}Added point at $loc")
     }
 
-    @CommandMethod("cam start <duration>")
-    private fun startCamCommand(player: Player, @Argument("duration") duration: Int) {
+    @CommandMethod("cam start <duration> <reparameterize>")
+    private fun startCamCommand(
+        player: Player,
+        @Argument("duration") duration: Int,
+        @Argument("reparameterize") reparameterize: Boolean
+    ) {
         // TODO: allow for specification of interpolation method
         // TODO: allow more complex duration strings (10m5s) instead of just a second value
 
@@ -118,7 +122,7 @@ public class UltimateCameraStudioPlugin : JavaPlugin(), Listener {
         }
 
         val path = Path(segments)
-        val pointsOnPath = path.getPoints(numPoints)
+        val pointsOnPath = path.getPoints(numPoints, reparameterize)
 
         // create player info packet for the fake player
         val playerInfoPacket = PacketPlayOutPlayerInfo(ADD_PLAYER)

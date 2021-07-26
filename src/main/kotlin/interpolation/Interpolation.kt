@@ -7,9 +7,13 @@ public interface Interpolation {
 public class LinearInterpolation(private val start: Double, private val end: Double) :
     Interpolation {
 
-    override fun valueAt(pos: Double): Double {
-        return start + (end - start) * pos
-    }
+    override fun valueAt(pos: Double): Double = lerp(start, end, pos)
+}
+
+/** Performs linear interpolation between points [a] and [b]. */
+public fun lerp(a: Double, b: Double, pos: Double): Double {
+    require(pos in 0.0..1.0)
+    return a + (b - a) * pos
 }
 
 public class CatmullRomSplineInterpolation(
