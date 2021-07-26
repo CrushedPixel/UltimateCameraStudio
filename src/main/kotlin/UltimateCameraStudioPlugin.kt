@@ -7,7 +7,11 @@ import cloud.commandframework.annotations.CommandMethod
 import cloud.commandframework.bukkit.BukkitCommandManager
 import cloud.commandframework.execution.CommandExecutionCoordinator
 import cloud.commandframework.meta.SimpleCommandMeta
-import com.mojang.authlib.GameProfile
+import com.comphenix.protocol.PacketType
+import com.comphenix.protocol.ProtocolLibrary
+import com.comphenix.protocol.events.PacketContainer
+import com.comphenix.protocol.utility.MinecraftReflection
+import com.comphenix.protocol.wrappers.WrappedDataWatcher
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import kr.entree.spigradle.annotations.PluginMain
@@ -15,25 +19,16 @@ import net.crushedpixel.ultimatecamerastudio.interpolation.CatmullRomSplineInter
 import net.crushedpixel.ultimatecamerastudio.interpolation.Interpolation
 import net.crushedpixel.ultimatecamerastudio.path.Path
 import net.crushedpixel.ultimatecamerastudio.path.PathSegment
+import net.minecraft.server.v1_16_R3.ArgumentAnchor
 import net.minecraft.server.v1_16_R3.Entity
-import net.minecraft.server.v1_16_R3.EnumGamemode
-import net.minecraft.server.v1_16_R3.IChatBaseComponent
 import net.minecraft.server.v1_16_R3.Packet
-import net.minecraft.server.v1_16_R3.PacketPlayOutCamera
-import net.minecraft.server.v1_16_R3.PacketPlayOutEntity
-import net.minecraft.server.v1_16_R3.PacketPlayOutEntityDestroy
-import net.minecraft.server.v1_16_R3.PacketPlayOutEntityHeadRotation
-import net.minecraft.server.v1_16_R3.PacketPlayOutEntityTeleport
-import net.minecraft.server.v1_16_R3.PacketPlayOutNamedEntitySpawn
-import net.minecraft.server.v1_16_R3.PacketPlayOutPlayerInfo
-import net.minecraft.server.v1_16_R3.PacketPlayOutPlayerInfo.EnumPlayerInfoAction.ADD_PLAYER
-import net.minecraft.server.v1_16_R3.PacketPlayOutPlayerInfo.EnumPlayerInfoAction.REMOVE_PLAYER
 import org.bukkit.Bukkit
 import org.bukkit.ChatColor
 import org.bukkit.GameMode
 import org.bukkit.Location
 import org.bukkit.command.CommandSender
 import org.bukkit.craftbukkit.v1_16_R3.entity.CraftPlayer
+import org.bukkit.entity.EntityType
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.HandlerList
@@ -121,93 +116,85 @@ public class UltimateCameraStudioPlugin : JavaPlugin(), Listener {
             segments += PathSegment(p0.world!!, xInter, yInter, zInter, yawInter, pitchInter)
         }
 
+        // put the player in spectator mode
+        val originalGameMode = player.gameMode
+        player.gameMode = GameMode.CREATIVE
+
         val path = Path(segments)
         val pointsOnPath = path.getPoints(numPoints, reparameterize)
 
-        // create player info packet for the fake player
-        val playerInfoPacket = PacketPlayOutPlayerInfo(ADD_PLAYER)
-
-        val entityId =
+        // spawn a fake area effect cloud for the player to ride on
+        val fakeEntityId =
             Reflect.onClass(Entity::class.java).get<AtomicInteger>("entityCount").incrementAndGet()
-
         val entityUUID = UUID.randomUUID()
 
-        val fakePlayerInfoData =
-            Reflect.onClass(PacketPlayOutPlayerInfo.PlayerInfoData::class.java)
-                .create(
-                    playerInfoPacket,
-                    GameProfile(entityUUID, entityUUID.toString().substring(0, 16)),
-                    entityId,
-                    EnumGamemode.CREATIVE,
-                    null as IChatBaseComponent?)
-                .get<PacketPlayOutPlayerInfo.PlayerInfoData>()
+        val aecPacket = PacketContainer(PacketType.Play.Server.SPAWN_ENTITY)
+        val aecMetadataPacket = PacketContainer(PacketType.Play.Server.ENTITY_METADATA)
 
-        Reflect.on(playerInfoPacket)
-            .get<MutableList<PacketPlayOutPlayerInfo.PlayerInfoData>>("b")
-            .add(fakePlayerInfoData)
+        aecPacket.integers.write(0, fakeEntityId)
+        aecPacket.uuiDs.write(0, entityUUID)
 
-        player.sendPacket(playerInfoPacket)
+        aecPacket.entityTypeModifier.write(
+            0, EntityType.AREA_EFFECT_CLOUD) // Sets the Entity Type to AEC
 
-        // create player spawn packet for the fake player
-        val spawnPlayerPacket = PacketPlayOutNamedEntitySpawn()
-        Reflect.on(spawnPlayerPacket)
-            .set("a", entityId)
-            .set("b", entityUUID)
-            .set("c", pointsOnPath.first().x)
-            .set("d", pointsOnPath.first().y)
-            .set("e", pointsOnPath.first().z)
-            .set("f", angleToByte(pointsOnPath.first().yaw))
-            .set("g", angleToByte(pointsOnPath.first().pitch))
+        aecPacket.doubles.write(0, pointsOnPath.first().x) // Writes X
+        aecPacket.doubles.write(1, pointsOnPath.first().y) // Writes Y
+        aecPacket.doubles.write(2, pointsOnPath.first().z) // Writes Z
+        aecPacket.integers.write(1, 0) // Writes Pitch
+        aecPacket.integers.write(2, 0) // Writes Yaw
+        aecPacket.integers.write(3, 0) // Writes Object Data (not needed)
+        aecPacket.integers.write(4, 0) // Writes velocity X
+        aecPacket.integers.write(5, 0) // Writes velocity Y
+        aecPacket.integers.write(6, 0) // Writes velocity Z
 
-        player.sendPacket(spawnPlayerPacket)
+        val watcher = WrappedDataWatcher() // Creates new Data Watcher
+        val serializer = WrappedDataWatcher.Registry.get(java.lang.Float::class.java)
 
-        // make the player spectate the fake player
-        val originalGameMode = player.gameMode
-        player.gameMode = GameMode.SPECTATOR
+        watcher.entity = player
+        watcher.setObject(7, serializer, 0f) // Sets the radius (index 7) to 0
+        // https://wiki.vg/Entity_metadata#Area_Effect_Cloud
 
-        val spectatePacket = PacketPlayOutCamera()
-        Reflect.on(spectatePacket).set("a", entityId)
-        player.sendPacket(spectatePacket)
+        aecMetadataPacket.integers.write(0, fakeEntityId)
+        aecMetadataPacket.watchableCollectionModifier.write(
+            0, watcher.watchableObjects) // set AEC radius to 0
+
+        player.sendPacket(aecPacket)
+        player.sendPacket(aecMetadataPacket)
+
+        val mountPacket = PacketContainer(PacketType.Play.Server.MOUNT)
+        val players = IntArray(1)
+        players[0] = player.entityId
+        mountPacket.integers.write(0, fakeEntityId) // Writes EID of the corresponding AEC
+        mountPacket.integerArrays.write(
+            0, players) // Writes Array of the player, who will be mounted
+
+        player.sendPacket(mountPacket)
 
         for ((i, point) in pointsOnPath.withIndex()) {
-            val posPacket =
-                if (i == 0) {
-                    val entityTeleportPacket = PacketPlayOutEntityTeleport()
-                    Reflect.on(entityTeleportPacket)
-                        .set("a", entityId)
-                        .set("b", point.x)
-                        .set("c", point.y)
-                        .set("d", point.z)
-                        .set("e", angleToByte(point.yaw))
-                        .set("f", angleToByte(point.pitch))
+            if (i == 0) continue
 
-                    entityTeleportPacket
-                } else {
-                    val prevPoint = pointsOnPath[i - 1]
+            val prevPoint = pointsOnPath[i - 1]
 
-                    val relativePacket = PacketPlayOutEntity.PacketPlayOutRelEntityMoveLook()
-                    Reflect.on(relativePacket)
-                        .set("a", entityId)
-                        .set("b", positionDelta(prevPoint.x, point.x))
-                        .set("c", positionDelta(prevPoint.y, point.y))
-                        .set("d", positionDelta(prevPoint.z, point.z))
-                        .set("e", angleToByte(point.yaw))
-                        .set("f", angleToByte(point.pitch))
-                        .set("g", false)
+            // move the AEC to the new location
+            val entityMovePacket = PacketContainer(PacketType.Play.Server.REL_ENTITY_MOVE)
+            entityMovePacket.integers.write(0, fakeEntityId) // Writes the corresponding EID
+            entityMovePacket.shorts.write(
+                0, positionDelta(prevPoint.x, point.x)) // Writes the new X
+            entityMovePacket.shorts.write(
+                1, positionDelta(prevPoint.y, point.y)) // Writes the new Y
+            entityMovePacket.shorts.write(
+                2, positionDelta(prevPoint.z, point.z)) // Writes the new Z
+            entityMovePacket.booleans.write(0, false) // Writes onGround to false
 
-                    relativePacket
-                }
-
-            val entityHeadRotationPacket = PacketPlayOutEntityHeadRotation()
-            Reflect.on(entityHeadRotationPacket).set("a", entityId).set("b", angleToByte(point.yaw))
+            player.sendPacket(entityMovePacket)
 
             Bukkit.getScheduler()
                 .scheduleSyncDelayedTask(
                     this,
                     {
-                        player.sendPacket(posPacket)
-                        player.sendPacket(entityHeadRotationPacket)
-                        player.sendPacket(spectatePacket)
+                        player.sendPacket(mountPacket)
+                        player.sendPacket(entityMovePacket)
+                        player.setHeadRotation(point.yaw, point.pitch)
                     },
                     i.toLong())
         }
@@ -216,29 +203,10 @@ public class UltimateCameraStudioPlugin : JavaPlugin(), Listener {
             .scheduleSyncDelayedTask(
                 this,
                 {
-                    // make them stop spectating the fake player
-                    player.sendPacket(PacketPlayOutCamera((player as CraftPlayer).handle))
-
-                    // despawn the fake player
-                    val entityRemovePacket = PacketPlayOutEntityDestroy(entityId)
+                    // despawn the fake AEC
+                    val entityRemovePacket = PacketContainer(PacketType.Play.Server.ENTITY_DESTROY)
+                    entityRemovePacket.integerArrays.write(0, intArrayOf(fakeEntityId))
                     player.sendPacket(entityRemovePacket)
-
-                    // remove the fake player from the tab list
-                    val entityRemoveFromInfoPacket = PacketPlayOutPlayerInfo(REMOVE_PLAYER)
-                    val fakePlayerInfoData =
-                        Reflect.onClass(PacketPlayOutPlayerInfo.PlayerInfoData::class.java)
-                            .create(
-                                entityRemoveFromInfoPacket,
-                                GameProfile(entityUUID, entityUUID.toString().substring(0, 16)),
-                                entityId,
-                                EnumGamemode.CREATIVE,
-                                null as IChatBaseComponent?)
-                            .get<PacketPlayOutPlayerInfo.PlayerInfoData>()
-
-                    Reflect.on(entityRemoveFromInfoPacket)
-                        .get<MutableList<PacketPlayOutPlayerInfo.PlayerInfoData>>("b")
-                        .add(fakePlayerInfoData)
-                    player.sendPacket(entityRemoveFromInfoPacket)
 
                     player.gameMode = originalGameMode
                 },
@@ -250,7 +218,27 @@ private fun Player.sendPacket(packet: Packet<*>) {
     (this as CraftPlayer).handle.playerConnection.sendPacket(packet)
 }
 
+private fun Player.sendPacket(packet: PacketContainer) {
+    ProtocolLibrary.getProtocolManager().sendServerPacket(player, packet)
+}
+
 private fun angleToByte(angle: Float): Byte = (angle * 256 / 360).toInt().toByte()
 
 private fun positionDelta(prev: Double, cur: Double): Short =
     ((cur * 32 - prev * 32) * 128).toInt().toShort()
+
+private fun Player.setHeadRotation(yaw: Float, pitch: Float) {
+    // get a location 10000 blocks from the player in the desired direction
+    val loc = eyeLocation
+    loc.yaw = yaw
+    loc.pitch = pitch
+    loc.add(loc.direction.multiply(10000))
+
+    // send a packet to the player, telling them to look at that location
+    val packet = PacketContainer(PacketType.Play.Server.LOOK_AT)
+    packet.doubles.write(0, loc.x)
+    packet.doubles.write(1, loc.y)
+    packet.doubles.write(2, loc.z)
+
+    sendPacket(packet)
+}

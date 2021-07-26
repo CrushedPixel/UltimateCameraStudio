@@ -16,6 +16,8 @@ plugins {
 repositories {
     mavenLocal()
     mavenCentral()
+
+    maven { url "https://repo.dmulloy2.net/repository/public/" }
 }
 
 apply from: "$rootDir/gradle/jacoco.gradle"
@@ -61,6 +63,9 @@ dependencies {
     implementation 'cloud.commandframework:cloud-bukkit:1.5.0'
     implementation 'cloud.commandframework:cloud-annotations:1.5.0'
     implementation 'org.jooq:joor-java-8:0.9.13'
+
+    //compileOnly 'com.comphenix.protocol:ProtocolLib:4.7.0'
+    compileOnly 'de.mcmdev:betterprotocol-api:1.0-SNAPSHOT'
 
     // Test dependencies
     testImplementation 'org.junit.jupiter:junit-jupiter:5.+'
