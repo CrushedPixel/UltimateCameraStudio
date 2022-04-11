@@ -7,6 +7,11 @@ import cloud.commandframework.annotations.CommandMethod
 import cloud.commandframework.bukkit.BukkitCommandManager
 import cloud.commandframework.execution.CommandExecutionCoordinator
 import cloud.commandframework.meta.SimpleCommandMeta
+import com.github.steveice10.mc.protocol.packet.ingame.client.ClientChatPacket
+import de.mcmdev.betterprotocol.BetterProtocol
+import de.mcmdev.betterprotocol.api.PacketEvent
+import de.mcmdev.betterprotocol.api.PacketHandler
+import de.mcmdev.betterprotocol.api.PacketListener
 import kotlin.time.DurationUnit
 import kotlin.time.ExperimentalTime
 import kotlin.time.toDuration
@@ -24,12 +29,13 @@ import org.bukkit.plugin.java.JavaPlugin
 
 @PluginMain
 @ExperimentalTime
-public class UltimateCameraStudioPlugin : JavaPlugin(), Listener {
+public class UltimateCameraStudioPlugin : JavaPlugin(), Listener, PacketListener {
 
     private val cameraPathManager = CameraPathManager(this)
 
     override fun onEnable() {
         Bukkit.getPluginManager().registerEvents(this, this)
+        BetterProtocol.get<Player>().eventBus.listen(this)
 
         // set up cloud commands
         val manager: CommandManager<CommandSender> =
@@ -40,12 +46,15 @@ public class UltimateCameraStudioPlugin : JavaPlugin(), Listener {
             AnnotationParser(manager, CommandSender::class.java) { SimpleCommandMeta.empty() }
 
         annotationParser.parse(this)
-
-        // protocol.eventBus.listen(ClientSteerVehiclePacket::class.java, ::onPlayerDismount)
     }
 
     override fun onDisable() {
         HandlerList.unregisterAll(this as Listener)
+    }
+
+    @PacketHandler
+    public fun onChatPacket(event: PacketEvent<ClientChatPacket, Player>) {
+        println("Received ${event.packet.message}")
     }
 
     @EventHandler

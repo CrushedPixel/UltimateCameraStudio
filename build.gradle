@@ -38,7 +38,7 @@ spigot {
     authors = [project.property("author")]
     apiVersion = project.property("apiVersion")
     load = STARTUP
-    //    depends = ['']
+    depends = ['BetterProtocol']
     //    softDepends = ['']
 }
 
@@ -65,7 +65,7 @@ dependencies {
     implementation 'org.jooq:joor-java-8:0.9.13'
 
     //compileOnly 'com.comphenix.protocol:ProtocolLib:4.7.0'
-    compileOnly 'de.mcmdev:betterprotocol-api:1.0-SNAPSHOT'
+    compileOnly 'de.mcmdev:betterprotocol-api:0.3'
 
     // Test dependencies
     testImplementation 'org.junit.jupiter:junit-jupiter:5.+'
